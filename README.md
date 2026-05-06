@@ -51,3 +51,6 @@ We see the following numbers:
 | VDE vs CSV.gz | 70.9% |
 | VDE.gz vs RawBinary | 96.4% |
 | VDE.gz vs CSV.gz | 70.9% |
+
+
+This file format is not AI-generated. It has been designed by my old-school organic brain.
