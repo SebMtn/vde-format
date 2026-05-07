@@ -1,71 +1,25 @@
 '''
-Date: 2026-03-04
-Author: Sebastien Mouton
-
 VDE file format: Variable Delta Encoding
 VDE is a file format designed for efficiently storing and range-querying
     long sequences of large, non-negative, monotonically non-decreasing integers.
 
 This is a reference implementation,
     i.e. this is unoptimized code targeting correctness and simplicity.
+
+Date: 2026-03-04
+Author: Sebastien Mouton
 '''
 
 import math
 import struct
+import os
 from dataclasses import dataclass
 from functools import reduce
 from itertools import islice
 from typing import ClassVar, Iterator, Iterable, Self, BinaryIO
 
-
 ENDIANNESS = 'little'
 
-class VdeIO:
-    '''
-    Read, write and manipulate Variable Delta Encoding file format (vde)
-
-    VDE is a file format designed for efficiently storing and range-querying
-        long sequences of large, non-negative, monotonically non-decreasing integers.
-    '''
-    def __init__(self):
-        pass
-    
-    @classmethod
-    def write(cls, ints: Iterable[int], f: BinaryIO, block_size=10_000):
-        file_header = VdeFileHeader(version_major=1, version_minor=0)
-        file_header.write(f)
-
-        it = iter(ints)
-        
-        while True:
-            block_elements = list(islice(it, block_size))
-            if len(block_elements) == 0:
-                break
-            block = VdeBlock.generate(block_elements)
-            block.write(f)
-    
-    @classmethod
-    def iter_values(cls, f : BinaryIO, min_value=None, max_value=None) -> Iterator[int]:
-        '''
-        iterate over all the values between min_value (included) and max_value (excluded)
-        '''
-        file_header = VdeFileHeader.read(f)
-        if not( file_header.version_major == 1 and file_header.version_minor == 0):
-            raise ValueError(f'Unsupported VDE version: {file_header.version_major}.{file_header.version_minor}')
-        
-        while True:
-            block = VdeBlock.read(f)
-            if block is None:
-                break
-
-            if max_value is not None and block.header.element_value >= max_value:
-                break
-
-            yield from block.iter_values(min_value, max_value)
-
-            if max_value is not None and block.trailer.element_value >= max_value:
-                break
-                    
 
 @dataclass
 class VdeBlockHeader:
@@ -121,6 +75,7 @@ class VdeBlockTrailer:
     def read(cls, f: BinaryIO) -> Self:
         element_value = uvarint_read(f)
         return cls(element_value=element_value)
+
 
 @dataclass
 class VdeBlock:
@@ -252,6 +207,100 @@ class VdeFileHeader:
         version_minor = int.from_bytes(raw_minor, byteorder=ENDIANNESS)
     
         return cls(version_major=version_major, version_minor=version_minor)
+    
+
+class VdeIO:
+    '''
+    Read, write and inspect Variable Delta Encoding file format (vde)
+
+    VDE is a file format designed for efficiently storing and range-querying
+        long sequences of large, non-negative, monotonically non-decreasing integers.
+    '''
+    def __init__(self):
+        pass
+    
+    @classmethod
+    def write(cls, ints: Iterable[int], f: BinaryIO, block_size=10_000):
+        file_header = VdeFileHeader(version_major=1, version_minor=0)
+        file_header.write(f)
+
+        it = iter(ints)
+        
+        while True:
+            block_elements = list(islice(it, block_size))
+            if len(block_elements) == 0:
+                break
+            block = VdeBlock.generate(block_elements)
+            block.write(f)
+    
+    @classmethod
+    def iter_values(cls, f: BinaryIO, min_value=None, max_value=None) -> Iterator[int]:
+        '''
+        iterate over all the values between min_value (included) and max_value (excluded)
+        '''
+        file_header = VdeFileHeader.read(f)
+        cls.check_version(file_header)
+        
+        while True:
+            block = VdeBlock.read(f)
+            if block is None:
+                break
+
+            if max_value is not None and block.header.element_value >= max_value:
+                break
+
+            yield from block.iter_values(min_value, max_value)
+
+            if max_value is not None and block.trailer.element_value >= max_value:
+                break
+    
+    @classmethod
+    def size(cls, f: BinaryIO) -> int:
+        file_header = VdeFileHeader.read(f)
+        cls.check_version(file_header)
+        size = 0
+        while True:
+            block_header = VdeBlockHeader.read(f)
+            if block_header is None:
+                break
+            size += block_header.num_deltas + 1
+            f.seek(block_header.num_deltas * block_header.delta_size, os.SEEK_CUR)
+            VdeBlockTrailer.read(f)
+        
+        return size
+    
+    @classmethod
+    def min(cls, f: BinaryIO) -> int:
+        file_header = VdeFileHeader.read(f)
+        cls.check_version(file_header)
+        block_header = VdeBlockHeader.read(f)
+        if block_header is None:
+            raise ValueError('This is an empty VDE file')
+        
+        return block_header.element_value
+    
+    @classmethod
+    def max(cls, f: BinaryIO) -> int:
+        file_header = VdeFileHeader.read(f)
+        cls.check_version(file_header)
+
+        trailer = None
+        while True:
+            block_header = VdeBlockHeader.read(f)
+            if block_header is None:
+                break
+            f.seek(block_header.num_deltas * block_header.delta_size, os.SEEK_CUR)
+            trailer = VdeBlockTrailer.read(f)
+
+        if trailer is None:
+            raise ValueError('This is an empty VDE file')
+        
+        return trailer.element_value
+    
+    @classmethod
+    def check_version(cls, file_header: VdeFileHeader):
+        if not( file_header.version_major == 1 and file_header.version_minor == 0):
+            raise ValueError(f'Unsupported VDE version: {file_header.version_major}.{file_header.version_minor}')
     
 
 def uvarint_encode(value: int) -> bytes:
